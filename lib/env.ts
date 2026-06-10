@@ -16,6 +16,13 @@ function optional(name: string, fallback = ""): string {
 export const env = {
   appUrl: optional("APP_URL", "http://localhost:3000"),
 
+  storage: {
+    // "local" = arquivos num volume do app (padrão). "s3" = MinIO/R2.
+    driver: optional("STORAGE_DRIVER", "local"),
+    // Pasta onde o driver local grava (deve ser um volume persistente).
+    uploadsDir: optional("UPLOADS_DIR", ".uploads"),
+  },
+
   fal: {
     key: optional("FAL_KEY"),
     modelText: optional("FAL_MODEL_TEXT", "xai/grok-imagine-image"),

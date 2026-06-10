@@ -7,7 +7,7 @@ Postgres — não de "torcer pra IA lembrar".
 - **Geração de imagem:** [fal.ai](https://fal.ai) — modelo Grok Imagine Image (text-to-image e
   image-to-image). Chamado direto do nosso backend via `@fal-ai/client`; **nenhum fluxo manual no fal**.
 - **Diretor de arte (prompt):** Deepseek transforma `Brand Kit + briefing` num prompt visual on-brand.
-- **Stack:** Next.js 15 (App Router) · Postgres + Prisma · Auth.js · storage S3 (MinIO/R2).
+- **Stack:** Next.js 15 (App Router) · Postgres + Prisma · Auth.js · storage local (volume) ou S3 (MinIO/R2).
 
 ## Como o sistema funciona (MVP)
 
@@ -48,21 +48,18 @@ Veja [.env.example](.env.example). Essenciais:
 | --- | --- |
 | `DATABASE_URL` | Postgres |
 | `AUTH_SECRET` | Auth.js (gere com `npx auth secret`) |
+| `AUTH_URL` / `APP_URL` | URL pública do app |
 | `FAL_KEY` | fal.ai |
 | `DEEPSEEK_API_KEY` | Deepseek (prompt builder) |
-| `S3_*` | Storage de assets (MinIO ou Cloudflare R2) |
 
-Os slugs dos modelos fal são configuráveis: `FAL_MODEL_TEXT` (text-to-image) e `FAL_MODEL_EDIT`
-(image-to-image).
+Storage: padrão **local** (`STORAGE_DRIVER=local`) — arquivos num volume montado em `/app/.uploads`,
+servidos por `/api/files/...`. Para usar S3/MinIO/R2, defina `STORAGE_DRIVER=s3` e as `S3_*`.
 
 ## Deploy no Easypanel
 
-1. **Postgres:** crie um serviço Postgres no Easypanel → copie a connection string para `DATABASE_URL`.
-2. **Storage:** crie um serviço **MinIO** (ou use **Cloudflare R2**) e crie o bucket `flyerpro`.
-   Aponte `S3_ENDPOINT`, chaves e `S3_PUBLIC_URL`.
-3. **App:** crie um serviço a partir deste repositório (build pelo `Dockerfile`). Preencha todas as
-   envs. O container roda `prisma db push` no start e sobe o servidor standalone na porta `3000`.
-4. Defina `AUTH_URL`/`APP_URL` com o domínio público do app.
+Passo a passo completo em [DEPLOY-EASYPANEL.md](DEPLOY-EASYPANEL.md). Resumo: crie um **Postgres** e um
+**App** (build pelo `Dockerfile`) com um **volume em `/app/.uploads`**, preencha as 6 variáveis acima e
+faça deploy. O container roda `prisma db push` no start.
 
 ## Estrutura
 
@@ -76,6 +73,7 @@ app/
   api/
     auth/[...nextauth]/   Auth.js
     fal/webhook/          callback da fila do fal (modo assíncrono)
+    files/[...path]/      serve os arquivos do storage local
 lib/
   db.ts fal.ts deepseek.ts storage.ts palette.ts generate.ts session.ts
 prisma/schema.prisma

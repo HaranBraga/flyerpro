@@ -1,25 +1,11 @@
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-} from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
+import { promises as fs } from "fs";
+import path from "path";
 import { env } from "./env";
 
-// S3-compatible client (works with MinIO and Cloudflare R2).
-const s3 = new S3Client({
-  region: env.s3.region,
-  endpoint: env.s3.endpoint || undefined,
-  forcePathStyle: env.s3.forcePathStyle,
-  credentials:
-    env.s3.accessKeyId && env.s3.secretAccessKey
-      ? {
-          accessKeyId: env.s3.accessKeyId,
-          secretAccessKey: env.s3.secretAccessKey,
-        }
-      : undefined,
-});
+// Two storage drivers, selected by STORAGE_DRIVER:
+//   "local" (default) → grava num volume do app, servido por /api/files/<key>
+//   "s3"              → MinIO / Cloudflare R2 (qualquer S3-compatível)
 
 export type StoredObject = {
   key: string;
@@ -27,6 +13,8 @@ export type StoredObject = {
   mimeType: string;
   size: number;
 };
+
+const isLocal = env.storage.driver !== "s3";
 
 function extFromMime(mime: string): string {
   const map: Record<string, string> = {
@@ -40,37 +28,131 @@ function extFromMime(mime: string): string {
   return map[mime] ?? "bin";
 }
 
-/** Public URL for a stored key (CDN/MinIO public endpoint). */
+function mimeFromExt(ext: string): string {
+  const map: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+    svg: "image/svg+xml",
+  };
+  return map[ext.toLowerCase()] ?? "application/octet-stream";
+}
+
+function newKey(prefix: string, mimeType: string): string {
+  return `${prefix}/${randomUUID()}.${extFromMime(mimeType)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Local driver
+// ---------------------------------------------------------------------------
+
+const uploadsRoot = path.resolve(process.cwd(), env.storage.uploadsDir);
+
+/** Resolve a storage key to an absolute path, blocking path traversal. */
+function localPath(key: string): string {
+  const full = path.resolve(uploadsRoot, key);
+  if (full !== uploadsRoot && !full.startsWith(uploadsRoot + path.sep)) {
+    throw new Error("Invalid storage key.");
+  }
+  return full;
+}
+
+async function localPut(body: Buffer, key: string): Promise<void> {
+  const full = localPath(key);
+  await fs.mkdir(path.dirname(full), { recursive: true });
+  await fs.writeFile(full, body);
+}
+
+/** Read a stored object from the local volume (used by /api/files). */
+export async function readLocalObject(
+  key: string
+): Promise<{ body: Buffer; mimeType: string } | null> {
+  try {
+    const full = localPath(key);
+    const body = await fs.readFile(full);
+    const ext = path.extname(full).replace(".", "");
+    return { body, mimeType: mimeFromExt(ext) };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// S3 driver (lazy — only loaded when STORAGE_DRIVER=s3)
+// ---------------------------------------------------------------------------
+
+type S3Module = typeof import("@aws-sdk/client-s3");
+let s3Client: InstanceType<S3Module["S3Client"]> | null = null;
+let s3mod: S3Module | null = null;
+
+async function getS3(): Promise<{ client: InstanceType<S3Module["S3Client"]>; mod: S3Module }> {
+  if (!s3mod) s3mod = await import("@aws-sdk/client-s3");
+  if (!s3Client) {
+    s3Client = new s3mod.S3Client({
+      region: env.s3.region,
+      endpoint: env.s3.endpoint || undefined,
+      forcePathStyle: env.s3.forcePathStyle,
+      credentials:
+        env.s3.accessKeyId && env.s3.secretAccessKey
+          ? {
+              accessKeyId: env.s3.accessKeyId,
+              secretAccessKey: env.s3.secretAccessKey,
+            }
+          : undefined,
+    });
+  }
+  return { client: s3Client, mod: s3mod };
+}
+
+// ---------------------------------------------------------------------------
+// Public API (driver-agnostic)
+// ---------------------------------------------------------------------------
+
+/** Public URL for a stored key. */
 export function publicUrl(key: string): string {
+  if (isLocal) {
+    return `${env.appUrl.replace(/\/$/, "")}/api/files/${key}`;
+  }
   const base = env.s3.publicUrl.replace(/\/$/, "");
   if (base) return `${base}/${key}`;
-  // Fallback: path-style endpoint URL.
   return `${env.s3.endpoint.replace(/\/$/, "")}/${env.s3.bucket}/${key}`;
 }
 
-/** Upload a buffer to object storage, returning its key + public URL. */
+/** Upload a buffer, returning its key + public URL. */
 export async function putObject(
   body: Buffer | Uint8Array,
   mimeType: string,
   prefix = "uploads"
 ): Promise<StoredObject> {
-  const key = `${prefix}/${randomUUID()}.${extFromMime(mimeType)}`;
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: env.s3.bucket,
-      Key: key,
-      Body: body,
-      ContentType: mimeType,
-    })
-  );
-  return { key, url: publicUrl(key), mimeType, size: body.byteLength };
+  const buf = Buffer.from(body);
+  const key = newKey(prefix, mimeType);
+
+  if (isLocal) {
+    await localPut(buf, key);
+  } else {
+    const { client, mod } = await getS3();
+    await client.send(
+      new mod.PutObjectCommand({
+        Bucket: env.s3.bucket,
+        Key: key,
+        Body: buf,
+        ContentType: mimeType,
+      })
+    );
+  }
+  return { key, url: publicUrl(key), mimeType, size: buf.byteLength };
 }
 
-/** Presigned GET URL (for private buckets without a public CDN). */
+/** URL to read an object (presigned for private S3; public URL for local). */
 export async function signedGetUrl(key: string, expiresIn = 3600): Promise<string> {
+  if (isLocal) return publicUrl(key);
+  const { client, mod } = await getS3();
+  const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
   return getSignedUrl(
-    s3,
-    new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }),
+    client,
+    new mod.GetObjectCommand({ Bucket: env.s3.bucket, Key: key }),
     { expiresIn }
   );
 }
