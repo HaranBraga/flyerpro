@@ -1,0 +1,184 @@
+// FlyerPro — schema multi-tenant para geração de artes com linha editorial.
+// Veja o plano em ~/.claude/plans para o contexto de cada modelo.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth (compatível com @auth/prisma-adapter)
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String       @id @default(cuid())
+  name          String?
+  email         String       @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String? // login por senha (opcional, ver Auth.js)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  accounts    Account[]
+  sessions    Session[]
+  memberships Membership[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenant: Workspace = uma empresa/cliente
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Workspace {
+  id        String       @id @default(cuid())
+  name      String
+  slug      String       @unique
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  memberships Membership[]
+  brands      Brand[]
+}
+
+model Membership {
+  id          String    @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        Role      @default(OWNER)
+  createdAt   DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+// ---------------------------------------------------------------------------
+// Brand Kit — coração da "linha editorial"
+// ---------------------------------------------------------------------------
+
+model Brand {
+  id               String  @id @default(cuid())
+  workspaceId      String
+  name             String
+  industry         String?
+  tone             String? @db.Text // tom/voz, inferido pelo Deepseek
+  styleDescription String? @db.Text // descrição visual recorrente
+  palette          Json? // ["#112233", ...] extraída da logo
+  fonts            Json? // { primary, secondary }
+  logoAssetId      String? @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logoAsset   Asset?       @relation("BrandLogo", fields: [logoAssetId], references: [id])
+  assets      Asset[]      @relation("BrandAssets")
+  generations Generation[]
+
+  @@index([workspaceId])
+}
+
+enum AssetType {
+  LOGO
+  PAST_ART // arte atual da empresa
+  REFERENCE // inspiração (upload ou link Behance/Freepik)
+  RESULT // flyer gerado
+}
+
+model Asset {
+  id        String    @id @default(cuid())
+  brandId   String
+  type      AssetType
+  url       String // URL no storage (MinIO/R2)
+  sourceUrl String? // origem externa (Behance/Freepik) quando aplicável
+  falUrl    String? // cache do upload pro fal.storage
+  mimeType  String?
+  width     Int?
+  height    Int?
+  meta      Json?
+  createdAt DateTime  @default(now())
+
+  brand      Brand        @relation("BrandAssets", fields: [brandId], references: [id], onDelete: Cascade)
+  logoOf     Brand?       @relation("BrandLogo")
+  resultOf   Generation?  @relation("GenerationResult")
+
+  @@index([brandId])
+  @@index([type])
+}
+
+enum GenerationStatus {
+  QUEUED
+  RUNNING
+  DONE
+  ERROR
+}
+
+model Generation {
+  id                 String           @id @default(cuid())
+  brandId            String
+  brief              String           @db.Text // o que o usuário pediu
+  prompt             String?          @db.Text // prompt final (Deepseek)
+  model              String // slug do modelo fal usado
+  referenceAssetIds  Json? // ids de Asset usados como referência i2i
+  params             Json? // seed, aspect ratio, etc.
+  status             GenerationStatus @default(QUEUED)
+  falRequestId       String? // id na fila do fal (p/ webhook)
+  resultAssetId      String?          @unique
+  costUsd            Float?
+  error              String?          @db.Text
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  brand        Brand   @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  resultAsset  Asset?  @relation("GenerationResult", fields: [resultAssetId], references: [id])
+
+  @@index([brandId])
+  @@index([status])
+  @@index([falRequestId])
+}
