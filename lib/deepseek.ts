@@ -16,22 +16,49 @@ export type BrandContext = {
 };
 
 const SYSTEM_PROMPT = `Você é o diretor de arte de uma agência. Sua função é transformar o
-briefing de um flyer em um PROMPT DE IMAGEM em inglês, detalhado e fiel à identidade visual da marca,
-para um modelo text-to-image (Grok Imagine).
+briefing de um flyer em um PROMPT DE IMAGEM em inglês, detalhado e fiel à identidade visual da marca.
+O prompt vai para um modelo de IMAGE-TO-IMAGE (Grok Imagine edit) que recebe imagens de referência
+junto com o texto.
 
 Regras:
-- Responda APENAS com o prompt de imagem, sem explicações nem aspas.
-- Mantenha consistência com a paleta, o tom e o estilo da marca informados.
-- Descreva composição, iluminação, estilo gráfico, paleta de cores (cite os HEX) e clima.
-- O usuário pediu que o TEXTO do flyer seja renderizado pela própria IA: inclua no prompt o texto
-  principal exatamente como deve aparecer, entre aspas, com instruções de layout (ex.: título grande
-  no topo, oferta em destaque, data no rodapé). Mantenha o texto curto e legível.
-- Não invente a marca: use só o que foi dado. Formato vertical de flyer (proporção 4:5) por padrão.`;
+- Responda APENAS com o prompt de imagem, em inglês, sem explicações nem aspas em volta.
+- Crie um flyer ORIGINAL e NOVO — NÃO copie o texto, marca ou logotipos que aparecem nas imagens de
+  referência de estilo. Elas servem só de inspiração de composição, cores e clima.
+- Mantenha consistência com a paleta (cite os HEX), o tom e o estilo da marca.
+- Descreva composição, hierarquia visual, iluminação, estilo gráfico e clima.
+- O TEXTO do flyer deve ser renderizado pela própria IA: inclua o texto principal exatamente como deve
+  aparecer, entre aspas, com layout (ex.: título grande no topo, oferta em destaque, data/CTA no rodapé).
+  Mantenha o texto curto, correto e legível.
+- Não invente dados da marca: use só o que foi dado. Formato vertical de flyer (4:5) por padrão.`;
+
+type RefContext = { hasLogo: boolean; styleRefCount: number };
+
+/** Instruções sobre como usar as imagens de referência passadas ao modelo. */
+function referenceGuidance(ctx: RefContext): string {
+  const lines: string[] = [];
+  if (ctx.hasLogo) {
+    lines.push(
+      "A PRIMEIRA imagem de referência é a LOGO oficial da empresa: exiba-a com destaque, " +
+        "mantenha-a intacta (sem distorcer, recolorir ou redesenhar) e integre-a ao layout."
+    );
+  }
+  if (ctx.styleRefCount > 0) {
+    lines.push(
+      `As outras ${ctx.styleRefCount} imagem(ns) são REFERÊNCIAS DE ESTILO: use-as apenas para ` +
+        "inspirar composição, paleta e clima. NÃO reproduza o texto, produtos ou marcas delas."
+    );
+  }
+  if (lines.length === 0) {
+    return "Não há imagens de referência: gere o flyer do zero seguindo a identidade da marca.";
+  }
+  return "USO DAS IMAGENS DE REFERÊNCIA:\n" + lines.map((l) => `- ${l}`).join("\n");
+}
 
 /** Build the final image prompt from brand kit + the user's flyer brief. */
 export async function buildFlyerPrompt(
   brand: BrandContext,
-  brief: string
+  brief: string,
+  refContext: RefContext = { hasLogo: false, styleRefCount: 0 }
 ): Promise<string> {
   const brandBlock = [
     `Marca: ${brand.name}`,
@@ -50,7 +77,9 @@ export async function buildFlyerPrompt(
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
-        content: `IDENTIDADE DA MARCA:\n${brandBlock}\n\nBRIEFING DO FLYER:\n${brief}`,
+        content: `IDENTIDADE DA MARCA:\n${brandBlock}\n\n${referenceGuidance(
+          refContext
+        )}\n\nBRIEFING DO FLYER:\n${brief}`,
       },
     ],
   });

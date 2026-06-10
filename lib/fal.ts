@@ -20,14 +20,18 @@ export type FalImageOutput = {
 
 export type GenerateInput = {
   prompt: string;
-  /** Reference image URL for image-to-image (Grok edit model). */
-  imageUrl?: string;
+  /**
+   * Reference images for the edit model. Both Grok edit and Nano Banana edit
+   * accept `image_urls` as an array (Grok: máx. 3). Convenção: o índice 0 é a
+   * LOGO da marca; os demais são referências de estilo.
+   */
+  imageUrls?: string[];
   seed?: number;
-  /** Extra model-specific params (aspect ratio, strength, etc.). */
+  /** Extra model-specific params (aspect ratio, etc.). */
   extra?: Record<string, unknown>;
 };
 
-/** Pick the right model slug: edit (i2i) when a reference is provided. */
+/** Pick the right model slug: edit (i2i) when references are provided. */
 export function pickModel(hasReference: boolean): string {
   return hasReference ? env.fal.modelEdit : env.fal.modelText;
 }
@@ -42,12 +46,16 @@ export async function uploadToFal(
   return fal.storage.upload(blob);
 }
 
+function hasReferences(input: GenerateInput): boolean {
+  return Array.isArray(input.imageUrls) && input.imageUrls.length > 0;
+}
+
 function buildInput(input: GenerateInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     prompt: input.prompt,
     ...input.extra,
   };
-  if (input.imageUrl) payload.image_url = input.imageUrl;
+  if (hasReferences(input)) payload.image_urls = input.imageUrls;
   if (typeof input.seed === "number") payload.seed = input.seed;
   return payload;
 }
@@ -60,7 +68,7 @@ export async function submitGeneration(
   input: GenerateInput,
   webhookUrl?: string
 ): Promise<{ requestId: string; model: string }> {
-  const model = pickModel(Boolean(input.imageUrl));
+  const model = pickModel(hasReferences(input));
   const { request_id } = await fal.queue.submit(model, {
     input: buildInput(input),
     webhookUrl,
@@ -84,7 +92,7 @@ export async function getGenerationResult(
 export async function generateSync(
   input: GenerateInput
 ): Promise<{ output: FalImageOutput; model: string }> {
-  const model = pickModel(Boolean(input.imageUrl));
+  const model = pickModel(hasReferences(input));
   const result = await fal.subscribe(model, {
     input: buildInput(input),
     logs: false,

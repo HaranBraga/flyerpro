@@ -23,6 +23,11 @@ export const env = {
     uploadsDir: optional("UPLOADS_DIR", ".uploads"),
   },
 
+  references: {
+    // Busca de referências por segmento no Freepik/Behance (best-effort).
+    scrape: optional("ENABLE_REFERENCE_SCRAPE", "true") !== "false",
+  },
+
   fal: {
     key: optional("FAL_KEY"),
     modelText: optional("FAL_MODEL_TEXT", "xai/grok-imagine-image"),
