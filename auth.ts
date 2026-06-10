@@ -12,6 +12,8 @@ const credentialsSchema = z.object({
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(db),
+  // Roda atrás de um reverse proxy (Easypanel/Traefik) — confia nos headers.
+  trustHost: true,
   // Credentials provider requires the JWT session strategy.
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
